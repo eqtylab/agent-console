@@ -234,7 +234,7 @@ export type FinalDecision =
 
 /** Helper to extract the decision type from a FinalDecision */
 export function getFinalDecisionType(decision: FinalDecision | null): FinalDecisionType | null {
-  if (!decision) return null;
+  if (!decision || typeof decision !== "object") return null;
   if ("Allow" in decision) return "Allow";
   if ("Deny" in decision) return "Deny";
   if ("Block" in decision) return "Block";
