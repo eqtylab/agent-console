@@ -1,6 +1,6 @@
-import type { FileEdit, FileDiff, FileEditType, SessionEvent } from "@/lib/types";
+import type { FileEdit, FileDiff, FileEditType, SessionEvent, SearchResponse } from "@/lib/types";
 
-export type TabId = "events" | "edits";
+export type TabId = "events" | "edits" | "policies";
 export type DiffViewMode = "split" | "unified";
 export type FileListMode = "tree" | "log";
 export type DiffContentMode = "edits" | "full";
@@ -55,6 +55,12 @@ export interface EventLogViewerProps {
   sessionId: string;
   selectedSubagentId: string | null;
   onSelectSubagent: (agentId: string | null) => void;
+  // Search props
+  searchQuery: string;
+  onSearchChange: (query: string) => void;
+  searchLoading: boolean;
+  searchResults: SearchResponse | null;
+  snippetMap?: Map<number, string>;
 }
 
 export interface JsonViewerProps {
@@ -74,6 +80,8 @@ export interface EventRowBaseProps {
   selectedSubagentId: string | null;
   highlightedIndices?: Set<number>;
   flashingByteOffsets?: Set<number>;
+  snippetMap?: Map<number, string>;
+  searchQuery?: string;
 }
 
 // Full props received by the component (includes react-window injected props)

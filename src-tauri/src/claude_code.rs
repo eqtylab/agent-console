@@ -404,7 +404,7 @@ struct JsonlContent {
 }
 
 /// Get the session file path for a project and session ID.
-fn get_session_file_path(project_path: &str, session_id: &str) -> Option<PathBuf> {
+pub fn get_session_file_path(project_path: &str, session_id: &str) -> Option<PathBuf> {
     let projects_dir = get_claude_projects_dir()?;
     let encoded_name = encode_project_path(project_path);
     let session_file = projects_dir
@@ -419,7 +419,7 @@ fn get_session_file_path(project_path: &str, session_id: &str) -> Option<PathBuf
 }
 
 /// Get the sub-agent session file path for a project and agent ID.
-fn get_subagent_file_path(project_path: &str, agent_id: &str) -> Option<PathBuf> {
+pub fn get_subagent_file_path(project_path: &str, agent_id: &str) -> Option<PathBuf> {
     let projects_dir = get_claude_projects_dir()?;
     let encoded_name = encode_project_path(project_path);
     let agent_file = projects_dir
@@ -756,6 +756,14 @@ pub struct SessionEvent {
     pub launched_agent_is_async: Option<bool>,
     /// Status of the sub-agent launch
     pub launched_agent_status: Option<String>,
+    /// User type: "external" for actual human input, None or other for system-injected
+    pub user_type: Option<String>,
+    /// Whether this is a compact summary (context continuation)
+    pub is_compact_summary: Option<bool>,
+    /// Whether this is a tool result (message.content is array with tool_result)
+    pub is_tool_result: bool,
+    /// Whether this is a meta/context injection (isMeta: true)
+    pub is_meta: bool,
 }
 
 /// Internal struct for parsing JSONL entries for event log.
@@ -778,6 +786,15 @@ struct JsonlEventEntry {
     /// Tool use result (contains agentId for Task tool results)
     #[serde(rename = "toolUseResult")]
     tool_use_result: Option<JsonlToolUseResult>,
+    /// User type: "external" for actual human input, other values for system-injected
+    #[serde(rename = "userType")]
+    user_type: Option<String>,
+    /// Whether this is a compact summary (system-injected context)
+    #[serde(rename = "isCompactSummary")]
+    is_compact_summary: Option<bool>,
+    /// Whether this is a meta/context injection
+    #[serde(rename = "isMeta")]
+    is_meta: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -855,6 +872,20 @@ fn extract_preview_from_content(content: &Value) -> String {
                 .unwrap_or_default()
         }
         _ => truncate_string(&content.to_string(), 500),
+    }
+}
+
+/// Check if message content is a tool_result (array containing tool_result items).
+fn is_tool_result_content(content: &Value) -> bool {
+    if let Value::Array(arr) = content {
+        arr.iter().any(|item| {
+            item.as_object()
+                .and_then(|obj| obj.get("type"))
+                .and_then(|t| t.as_str())
+                == Some("tool_result")
+        })
+    } else {
+        false
     }
 }
 
@@ -998,6 +1029,17 @@ fn parse_session_event(line: &str, sequence: u32, byte_offset: u64) -> Option<Se
     let launched_agent_is_async = tool_result.and_then(|r| r.is_async);
     let launched_agent_status = tool_result.and_then(|r| r.status.clone());
 
+    // Detect if this is a tool_result message (message.content is array with tool_result)
+    let is_tool_result = entry
+        .message
+        .as_ref()
+        .and_then(|m| m.content.as_ref())
+        .map(is_tool_result_content)
+        .unwrap_or(false);
+
+    // isMeta indicates context injection
+    let is_meta = entry.is_meta.unwrap_or(false);
+
     Some(SessionEvent {
         sequence,
         uuid: entry.uuid,
@@ -1016,6 +1058,10 @@ fn parse_session_event(line: &str, sequence: u32, byte_offset: u64) -> Option<Se
         launched_agent_prompt,
         launched_agent_is_async,
         launched_agent_status,
+        user_type: entry.user_type,
+        is_compact_summary: entry.is_compact_summary,
+        is_tool_result,
+        is_meta,
     })
 }
 
@@ -1227,6 +1273,155 @@ pub fn get_subagent_raw_json(project_path: &str, agent_id: &str, byte_offset: u6
     }
 
     Some(line)
+}
+
+// =============================================================================
+// Policy Evaluation Telemetry
+// =============================================================================
+
+/// Summary of a policy evaluation for list display.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PolicyEvaluation {
+    /// Filename of the telemetry file
+    pub filename: String,
+    /// Timestamp (ISO 8601)
+    pub timestamp: String,
+    /// Event type (e.g., "PreToolUse")
+    pub event_type: Option<String>,
+    /// Tool name (e.g., "Bash")
+    pub tool_name: Option<String>,
+    /// Final decision (e.g., "Allow", "Block")
+    pub decision: Option<String>,
+    /// Total duration in milliseconds
+    pub duration_ms: u64,
+    /// Trace ID
+    pub trace_id: String,
+}
+
+/// Get the policy telemetry directory for a project.
+fn get_telemetry_dir(project_path: &str) -> PathBuf {
+    PathBuf::from(project_path)
+        .join(".cupcake")
+        .join("telemetry")
+}
+
+/// Get list of policy evaluations for a project.
+pub fn get_policy_evaluations(project_path: &str) -> Vec<PolicyEvaluation> {
+    let telemetry_dir = get_telemetry_dir(project_path);
+
+    if !telemetry_dir.exists() {
+        return Vec::new();
+    }
+
+    let entries = match fs::read_dir(&telemetry_dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut evaluations: Vec<PolicyEvaluation> = Vec::new();
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+
+        // Only process .json files
+        if path.extension().map(|e| e != "json").unwrap_or(true) {
+            continue;
+        }
+
+        let filename = match path.file_name() {
+            Some(n) => n.to_string_lossy().to_string(),
+            None => continue,
+        };
+
+        // Parse the JSON file to extract summary info
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let span: Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        // Extract fields from the CupcakeSpan
+        let timestamp = span
+            .get("timestamp")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let trace_id = span
+            .get("trace_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let raw_event = span.get("raw_event");
+        let event_type = raw_event
+            .and_then(|e| e.get("hook_event_name"))
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        let tool_name = raw_event
+            .and_then(|e| e.get("tool_name"))
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        // Extract decision from response or phases
+        // final_decision is a tagged union like {"Allow": {...}} or {"Deny": {...}}
+        let decision = span
+            .get("response")
+            .and_then(|r| r.get("decision"))
+            .and_then(|d| {
+                // Tagged union - get the first key
+                d.as_object().and_then(|obj| obj.keys().next().cloned())
+            })
+            .or_else(|| {
+                // Try to get from last phase's final_decision
+                span.get("phases")
+                    .and_then(|p| p.as_array())
+                    .and_then(|arr| arr.last())
+                    .and_then(|phase| phase.get("evaluation"))
+                    .and_then(|eval| eval.get("final_decision"))
+                    .and_then(|d| {
+                        // Tagged union - get the first key
+                        d.as_object().and_then(|obj| obj.keys().next().cloned())
+                    })
+            });
+
+        let duration_ms = span
+            .get("total_duration_ms")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
+        evaluations.push(PolicyEvaluation {
+            filename,
+            timestamp,
+            event_type,
+            tool_name,
+            decision,
+            duration_ms,
+            trace_id,
+        });
+    }
+
+    // Sort by timestamp descending (newest first)
+    evaluations.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    evaluations
+}
+
+/// Get the raw JSON content of a specific policy evaluation.
+pub fn get_policy_evaluation(project_path: &str, filename: &str) -> Option<String> {
+    let telemetry_dir = get_telemetry_dir(project_path);
+    let file_path = telemetry_dir.join(filename);
+
+    if !file_path.exists() {
+        return None;
+    }
+
+    fs::read_to_string(&file_path).ok()
 }
 
 #[cfg(test)]

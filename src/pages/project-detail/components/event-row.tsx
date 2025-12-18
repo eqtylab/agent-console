@@ -1,11 +1,39 @@
-import {
-  IconChevronRight,
-  IconBolt,
-  IconStack2,
-} from "@tabler/icons-react";
 import { cn } from "@/lib/utils";
-import { formatEventTime, getEventBadgeClass } from "../utils";
+import { formatEventTime, getEventBadgeClass, getEventDisplayLabel } from "../utils";
 import type { EventRowProps } from "../types";
+
+// Parse search query into terms (same logic as Rust backend)
+function parseSearchTerms(query: string): string[] {
+  if (!query.trim()) return [];
+  return query
+    .split(/\s+/)
+    .filter((word) => word !== "AND" && word !== "OR")
+    .map((word) => word.toLowerCase());
+}
+
+// Highlight matching terms in text
+function highlightTerms(text: string, terms: string[]): React.ReactNode {
+  if (terms.length === 0) return text;
+
+  // Build regex to match any term (case-insensitive)
+  const pattern = terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  const regex = new RegExp(`(${pattern})`, "gi");
+
+  const parts = text.split(regex);
+  if (parts.length === 1) return text;
+
+  return parts.map((part, i) => {
+    const isMatch = terms.some((t) => part.toLowerCase() === t);
+    if (isMatch) {
+      return (
+        <mark key={i} className="bg-yellow-300 dark:bg-yellow-600 text-foreground rounded-sm px-0.5">
+          {part}
+        </mark>
+      );
+    }
+    return part;
+  });
+}
 
 export function EventRowComponent({
   index,
@@ -17,6 +45,8 @@ export function EventRowComponent({
   selectedSubagentId,
   highlightedIndices,
   flashingByteOffsets,
+  snippetMap,
+  searchQuery,
 }: EventRowProps) {
   const event = events[index];
   const isCompaction = event.subtype === "compact_boundary";
@@ -24,6 +54,7 @@ export function EventRowComponent({
   const linkedSummary = event.logicalParentUuid ? summaryMap.get(event.logicalParentUuid) : null;
   const isHighlighted = highlightedIndices?.has(index) ?? false;
   const isFlashing = flashingByteOffsets?.has(event.byteOffset) ?? false;
+  const searchTerms = searchQuery ? parseSearchTerms(searchQuery) : [];
 
   // Highlight wrapper - adds a visible boundary box around highlighted rows
   const HighlightWrapper = ({ children }: { children: React.ReactNode }) => {
@@ -53,7 +84,6 @@ export function EventRowComponent({
               {formatEventTime(event.timestamp)}
             </span>
             <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400">
-              <IconBolt className="size-3.5" />
               <span className="text-[0.65rem] font-medium">Compaction</span>
               {event.compactMetadata && (
                 <span className="text-[0.6rem] text-amber-600/70 dark:text-amber-400/70">
@@ -97,7 +127,6 @@ export function EventRowComponent({
               {formatEventTime(event.timestamp)}
             </span>
             <div className="flex items-center gap-2 text-purple-600 dark:text-purple-400">
-              <IconStack2 className="size-3.5" />
               <span className="text-[0.65rem] font-medium">
                 {isAsyncLaunch ? "Sub-agent" : "Task"}
               </span>
@@ -116,7 +145,6 @@ export function EventRowComponent({
               )}
             </div>
             <div className="flex-1 h-px bg-purple-500/30 ml-3" />
-            <IconChevronRight className="size-3.5 text-purple-500/50 mr-2" />
           </div>
         </HighlightWrapper>
       </div>
@@ -148,7 +176,7 @@ export function EventRowComponent({
                   getEventBadgeClass(event)
                 )}
               >
-                {event.eventType}
+                {getEventDisplayLabel(event)}
               </span>
 
               {/* Tool name badge (if applicable) */}
@@ -159,9 +187,17 @@ export function EventRowComponent({
               )}
             </div>
 
-            {/* Preview text */}
+            {/* Preview text (or snippet when searching, with highlighted terms) */}
             <span className="flex-1 min-w-0 text-xs truncate text-muted-foreground">
-              {event.preview || event.summary}
+              {(() => {
+                const snippet = snippetMap?.get(event.sequence);
+                const text = snippet ?? event.preview ?? event.summary ?? "";
+                // Highlight search terms in snippets
+                if (snippet && searchTerms.length > 0) {
+                  return highlightTerms(text, searchTerms);
+                }
+                return text;
+              })()}
             </span>
           </div>
         </div>

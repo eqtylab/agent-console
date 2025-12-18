@@ -237,3 +237,102 @@ pub fn unwatch_subagent(
 
     Ok(())
 }
+
+/// Event payload sent to the frontend when telemetry files change.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TelemetryChangedPayload {
+    pub project_path: String,
+}
+
+/// Get the telemetry directory path for a project.
+fn get_telemetry_dir_path(project_path: &str) -> PathBuf {
+    PathBuf::from(project_path)
+        .join(".cupcake")
+        .join("telemetry")
+}
+
+/// Start watching a project's telemetry directory for changes.
+pub fn watch_telemetry(
+    app_handle: AppHandle,
+    state: &WatcherState,
+    project_path: String,
+) -> Result<(), String> {
+    let key = format!("{}:telemetry", project_path);
+
+    // Check if already watching
+    {
+        let watchers = state.watchers.lock().map_err(|e| e.to_string())?;
+        if watchers.contains_key(&key) {
+            return Ok(()); // Already watching
+        }
+    }
+
+    let telemetry_dir = get_telemetry_dir_path(&project_path);
+
+    // Create the directory if it doesn't exist (so we can watch it)
+    if !telemetry_dir.exists() {
+        std::fs::create_dir_all(&telemetry_dir)
+            .map_err(|e| format!("Failed to create telemetry dir: {}", e))?;
+    }
+
+    let project_path_clone = project_path.clone();
+
+    // Create debounced watcher with 300ms debounce
+    let mut debouncer = new_debouncer(
+        Duration::from_millis(300),
+        move |result: Result<Vec<notify_debouncer_mini::DebouncedEvent>, notify::Error>| {
+            if let Ok(events) = result {
+                for event in events {
+                    if event.kind == DebouncedEventKind::Any {
+                        // Only emit for JSON files
+                        if event
+                            .path
+                            .extension()
+                            .map(|e| e == "json")
+                            .unwrap_or(false)
+                        {
+                            let _ = app_handle.emit(
+                                "telemetry-changed",
+                                TelemetryChangedPayload {
+                                    project_path: project_path_clone.clone(),
+                                },
+                            );
+                            break; // Only emit once per batch
+                        }
+                    }
+                }
+            }
+        },
+    )
+    .map_err(|e| format!("Failed to create watcher: {}", e))?;
+
+    // Watch the telemetry directory
+    debouncer
+        .watcher()
+        .watch(&telemetry_dir, RecursiveMode::NonRecursive)
+        .map_err(|e| format!("Failed to watch telemetry dir: {}", e))?;
+
+    // Store the watcher handle
+    {
+        let mut watchers = state.watchers.lock().map_err(|e| e.to_string())?;
+        watchers.insert(
+            key,
+            WatcherHandle {
+                _debouncer: debouncer,
+            },
+        );
+    }
+
+    Ok(())
+}
+
+/// Stop watching a project's telemetry directory.
+pub fn unwatch_telemetry(state: &WatcherState, project_path: &str) -> Result<(), String> {
+    let key = format!("{}:telemetry", project_path);
+
+    let mut watchers = state.watchers.lock().map_err(|e| e.to_string())?;
+    watchers.remove(&key);
+
+    Ok(())
+}

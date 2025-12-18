@@ -8,6 +8,7 @@ import {
   IconCopy,
   IconCheck,
   IconLoader2,
+  IconSearch,
   IconStack2,
   IconX,
 } from "@tabler/icons-react";
@@ -41,6 +42,11 @@ export function EventLogViewer({
   sessionId,
   selectedSubagentId,
   onSelectSubagent,
+  searchQuery,
+  onSearchChange,
+  searchLoading,
+  searchResults,
+  snippetMap,
 }: EventLogViewerProps) {
   const listRef = useRef<ListImperativeAPI>(null);
   const subagentListRef = useRef<ListImperativeAPI>(null);
@@ -280,8 +286,12 @@ export function EventLogViewer({
       }
     }
 
+    // Update ref BEFORE any early return so we don't keep detecting same events as new
+    const hadPreviousData = prevByteOffsetsRef.current.size > 0;
+    prevByteOffsetsRef.current = currentOffsets;
+
     // Only flash if we had previous data (skip initial load)
-    if (newFlashing.size > 0 && prevByteOffsetsRef.current.size > 0) {
+    if (newFlashing.size > 0 && hadPreviousData) {
       setFlashingByteOffsets(newFlashing);
       // Clear flash after animation completes (3 flashes = 900ms)
       const timer = setTimeout(() => {
@@ -289,8 +299,6 @@ export function EventLogViewer({
       }, 900);
       return () => clearTimeout(timer);
     }
-
-    prevByteOffsetsRef.current = currentOffsets;
   }, [events]);
 
   // Detect new sub-agent events and trigger flash animation
@@ -305,8 +313,12 @@ export function EventLogViewer({
       }
     }
 
+    // Update ref BEFORE any early return so we don't keep detecting same events as new
+    const hadPreviousData = prevSubagentByteOffsetsRef.current.size > 0;
+    prevSubagentByteOffsetsRef.current = currentOffsets;
+
     // Only flash if we had previous data (skip initial load)
-    if (newFlashing.size > 0 && prevSubagentByteOffsetsRef.current.size > 0) {
+    if (newFlashing.size > 0 && hadPreviousData) {
       setSubagentFlashingByteOffsets(newFlashing);
       // Clear flash after animation completes (3 flashes = 900ms)
       const timer = setTimeout(() => {
@@ -314,8 +326,6 @@ export function EventLogViewer({
       }, 900);
       return () => clearTimeout(timer);
     }
-
-    prevSubagentByteOffsetsRef.current = currentOffsets;
   }, [subagentEvents]);
 
   // Handler for selecting a main event - closes subagent panel, opens JSON viewer
@@ -354,8 +364,10 @@ export function EventLogViewer({
       selectedSubagentId,
       highlightedIndices,
       flashingByteOffsets,
+      snippetMap,
+      searchQuery,
     }),
-    [events, summaryMap, handleSelectMainEvent, handleSelectSubagent, selectedSubagentId, highlightedIndices, flashingByteOffsets]
+    [events, summaryMap, handleSelectMainEvent, handleSelectSubagent, selectedSubagentId, highlightedIndices, flashingByteOffsets, snippetMap, searchQuery]
   );
 
   const subagentRowProps = useMemo(
@@ -377,6 +389,29 @@ export function EventLogViewer({
       <div className="shrink-0 px-3 py-2 border-b border-border overflow-x-auto scrollbar-thin">
         <div className="flex items-center justify-between gap-2 min-w-fit">
           <div className="flex items-center gap-1 shrink-0">
+            {/* Search input */}
+            <div className="relative mr-1">
+              <IconSearch className="absolute left-2 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => onSearchChange(e.target.value)}
+                placeholder="Search (AND, OR)"
+                className={cn(
+                  "pl-7 pr-2 py-1 rounded text-[0.65rem] bg-muted/50 border border-transparent",
+                  "focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20",
+                  "placeholder:text-muted-foreground/60 w-36 sm:w-44"
+                )}
+              />
+              {searchLoading && (
+                <IconLoader2 className="absolute right-2 top-1/2 -translate-y-1/2 size-3 animate-spin text-muted-foreground" />
+              )}
+            </div>
+            {searchResults && (
+              <span className="text-[0.6rem] text-muted-foreground whitespace-nowrap mr-1">
+                {searchResults.matches.length.toLocaleString()}{searchResults.truncated && "+"}
+              </span>
+            )}
             {/* Mode dropdown */}
             <DropdownMenu>
               <DropdownMenuTrigger className="flex items-center gap-1 px-2 py-0.5 rounded text-[0.65rem] font-medium bg-muted text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap">
@@ -399,8 +434,16 @@ export function EventLogViewer({
               </DropdownMenuContent>
             </DropdownMenu>
             {/* Category buttons */}
-            {["all", "user", "assistant", "system", "compaction", "subagent"].map((f) => {
-              const label = f === "subagent" ? "Sub-agent" : f.charAt(0).toUpperCase() + f.slice(1);
+            {["all", "me", "context", "assistant", "system", "compaction", "subagent"].map((f) => {
+              const labelMap: Record<string, string> = {
+                all: "All",
+                me: "Me",
+                context: "Context",
+                assistant: "Assistant",
+                system: "System",
+                compaction: "Compaction",
+                subagent: "Sub-agent",
+              };
               return (
                 <button
                   key={f}
@@ -412,7 +455,7 @@ export function EventLogViewer({
                       : "bg-muted text-muted-foreground hover:text-foreground"
                   )}
                 >
-                  {label}
+                  {labelMap[f]}
                 </button>
               );
             })}

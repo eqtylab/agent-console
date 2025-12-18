@@ -166,6 +166,7 @@ export function JsonViewer({ data, label, defaultExpanded = false, isRoot = fals
               <JsonViewer
                 label={isArray ? undefined : key}
                 data={value}
+                defaultExpanded={defaultExpanded}
               />
               {index < entries.length - 1 && <span className="text-muted-foreground">,</span>}
             </div>

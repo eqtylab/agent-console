@@ -149,6 +149,14 @@ export interface SessionEvent {
   launchedAgentIsAsync: boolean | null;
   /** Status of the sub-agent launch */
   launchedAgentStatus: string | null;
+  /** User type: "external" for actual human input, null/other for system-injected */
+  userType: string | null;
+  /** Whether this is a compact summary (context continuation) */
+  isCompactSummary: boolean | null;
+  /** Whether this is a tool result (message.content is array with tool_result) */
+  isToolResult: boolean;
+  /** Whether this is a meta/context injection (isMeta: true) */
+  isMeta: boolean;
 }
 
 /** Paginated response for session events */
@@ -161,4 +169,247 @@ export interface SessionEventsResponse {
   offset: number;
   /** Whether there are more events after this page */
   hasMore: boolean;
+}
+
+// =============================================================================
+// Policy Evaluation / CupcakeSpan Types
+// =============================================================================
+
+/** Summary of a policy evaluation for list display */
+export interface PolicyEvaluation {
+  /** Filename of the telemetry file */
+  filename: string;
+  /** Timestamp (ISO 8601) */
+  timestamp: string;
+  /** Event type (e.g., "PreToolUse") */
+  eventType: string | null;
+  /** Tool name (e.g., "Bash") */
+  toolName: string | null;
+  /** Final decision (e.g., "Allow", "Block") */
+  decision: string | null;
+  /** Total duration in milliseconds */
+  durationMs: number;
+  /** Trace ID */
+  traceId: string;
+}
+
+/** Harness type that generated the event */
+export type HarnessType = "ClaudeCode" | "Cursor" | "OpenCode" | "Factory";
+
+/** Final decision type name */
+export type FinalDecisionType = "Allow" | "Block" | "Deny" | "Halt" | "Ask" | "Modify";
+
+/** Final decision content for Allow */
+export interface AllowDecision {
+  context: string[];
+}
+
+/** Final decision content for blocking decisions */
+export interface BlockingDecision {
+  reason: string;
+  agent_messages: string[];
+}
+
+/** Final decision content for Ask */
+export interface AskDecision {
+  reason: string;
+  agent_messages: string[];
+}
+
+/** Final decision content for Modify */
+export interface ModifyDecision {
+  reason: string;
+  updated_input: unknown;
+  agent_messages: string[];
+}
+
+/** Tagged union final decision from policy evaluation (matches Rust FinalDecision enum) */
+export type FinalDecision =
+  | { Allow: AllowDecision }
+  | { Deny: BlockingDecision }
+  | { Block: BlockingDecision }
+  | { Halt: BlockingDecision }
+  | { Ask: AskDecision }
+  | { Modify: ModifyDecision };
+
+/** Helper to extract the decision type from a FinalDecision */
+export function getFinalDecisionType(decision: FinalDecision | null): FinalDecisionType | null {
+  if (!decision) return null;
+  if ("Allow" in decision) return "Allow";
+  if ("Deny" in decision) return "Deny";
+  if ("Block" in decision) return "Block";
+  if ("Halt" in decision) return "Halt";
+  if ("Ask" in decision) return "Ask";
+  if ("Modify" in decision) return "Modify";
+  return null;
+}
+
+/** A single signal execution result */
+export interface SignalExecution {
+  /** Signal name */
+  name: string;
+  /** Command that was executed */
+  command: string;
+  /** Result value (JSON) */
+  result: unknown;
+  /** Duration in milliseconds */
+  durationMs: number | null;
+  /** Exit code if applicable */
+  exitCode: number | null;
+}
+
+/** Signals phase - contains all signal executions for a policy phase */
+export interface SignalsPhase {
+  /** Span ID */
+  spanId: string;
+  /** Parent span ID (the PolicyPhase) */
+  parentSpanId: string;
+  /** Start time in nanoseconds since Unix epoch */
+  startTimeUnixNano: number;
+  /** End time in nanoseconds since Unix epoch */
+  endTimeUnixNano: number;
+  /** Duration in milliseconds */
+  durationMs: number;
+  /** List of signal executions */
+  signals: SignalExecution[];
+}
+
+/** A single decision result (halt, deny, block, ask, etc.) */
+export interface DecisionResult {
+  /** Rule ID that triggered this decision */
+  ruleId: string;
+  /** Reason for the decision */
+  reason: string;
+  /** Severity level */
+  severity: string;
+}
+
+/** WASM decision set from policy evaluation */
+export interface DecisionSet {
+  /** Halt decisions (immediate stop) */
+  halts: DecisionResult[];
+  /** Denial decisions */
+  denials: DecisionResult[];
+  /** Block decisions */
+  blocks: DecisionResult[];
+  /** Ask decisions (require user confirmation) */
+  asks: DecisionResult[];
+  /** Modifications to apply */
+  modifications: unknown[];
+  /** Context to add */
+  addContext: unknown[];
+}
+
+/** Evaluation result for a policy phase */
+export interface EvaluationResult {
+  /** Span ID */
+  spanId: string;
+  /** Parent span ID */
+  parentSpanId: string;
+  /** Start time in nanoseconds since Unix epoch */
+  startTimeUnixNano: number;
+  /** End time in nanoseconds since Unix epoch */
+  endTimeUnixNano: number;
+  /** Whether the event was routed to policies */
+  routed: boolean;
+  /** Names of policies that matched */
+  matchedPolicies: string[];
+  /** Reason for early exit if applicable */
+  exitReason: string | null;
+  /** WASM decision set */
+  wasmDecisionSet: DecisionSet | null;
+  /** Final decision for this phase */
+  finalDecision: FinalDecision | null;
+  /** Duration in milliseconds */
+  durationMs: number;
+}
+
+/** A single policy evaluation phase (global, catalog, project) */
+export interface PolicyPhase {
+  /** Span ID */
+  spanId: string;
+  /** Parent span ID (the root CupcakeSpan) */
+  parentSpanId: string;
+  /** Start time in nanoseconds since Unix epoch */
+  startTimeUnixNano: number;
+  /** End time in nanoseconds since Unix epoch */
+  endTimeUnixNano: number;
+  /** Phase name (e.g., "global", "project", "catalog:xyz") */
+  name: string;
+  /** Signals phase (optional) */
+  signals: SignalsPhase | null;
+  /** Evaluation result */
+  evaluation: EvaluationResult;
+  /** Duration in milliseconds */
+  durationMs: number;
+}
+
+/** Enrichment phase - preprocessing/normalization */
+export interface EnrichPhase {
+  /** Span ID */
+  spanId: string;
+  /** Parent span ID */
+  parentSpanId: string;
+  /** Start time in nanoseconds since Unix epoch */
+  startTimeUnixNano: number;
+  /** End time in nanoseconds since Unix epoch */
+  endTimeUnixNano: number;
+  /** Enriched event data */
+  enrichedEvent: Record<string, unknown>;
+  /** Operations performed */
+  operations: string[];
+  /** Duration in microseconds */
+  durationUs: number;
+}
+
+/** Root span for a complete policy evaluation */
+export interface CupcakeSpan {
+  /** Span ID */
+  spanId: string;
+  /** Trace ID */
+  traceId: string;
+  /** Start time in nanoseconds since Unix epoch */
+  startTimeUnixNano: number;
+  /** End time in nanoseconds since Unix epoch */
+  endTimeUnixNano: number;
+  /** Raw input event */
+  rawEvent: Record<string, unknown>;
+  /** Harness that generated the event */
+  harness: HarnessType;
+  /** Timestamp (ISO 8601) */
+  timestamp: string;
+  /** Enrichment phase (optional) */
+  enrich: EnrichPhase | null;
+  /** Policy evaluation phases */
+  phases: PolicyPhase[];
+  /** Final response */
+  response: Record<string, unknown> | null;
+  /** Errors encountered */
+  errors: string[];
+  /** Total duration in milliseconds */
+  totalDurationMs: number;
+}
+
+// =============================================================================
+// Search Types
+// =============================================================================
+
+/** A single search match result */
+export interface SearchMatch {
+  /** Line number (0-indexed, same as event sequence) */
+  sequence: number;
+  /** Byte offset in file for loading full JSON */
+  byteOffset: number;
+  /** Snippet of text showing match context */
+  snippet: string;
+}
+
+/** Search response from backend */
+export interface SearchResponse {
+  /** Matching line indices */
+  matches: SearchMatch[];
+  /** Total lines searched */
+  totalSearched: number;
+  /** Whether search was truncated (hit max_results limit) */
+  truncated: boolean;
 }

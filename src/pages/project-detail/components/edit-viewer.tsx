@@ -157,12 +157,12 @@ export function EditViewer({
   });
 
   return (
-    <PanelGroup direction="horizontal" autoSaveId="edit-viewer-layout" className="h-full">
+    <PanelGroup direction="horizontal" autoSaveId="edit-viewer-layout-v2" className="h-full">
       {/* File tree sidebar */}
       <Panel
         ref={sidebarPanelRef}
         defaultSize={25}
-        minSize={3}
+        minSize={15}
         maxSize={50}
         collapsible={true}
         collapsedSize={3}

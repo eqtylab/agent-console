@@ -149,14 +149,51 @@ export function useMonacoTheme(): "vs" | "vs-dark" {
   return theme === "dark" ? "vs-dark" : "vs";
 }
 
+// Get display label for event type
+// Distinguishes between actual human input ("me") vs system-injected ("context")
+export function getEventDisplayLabel(event: SessionEvent): string {
+  if (event.subtype === "compact_boundary") {
+    return "compaction";
+  }
+  if (event.eventType === "user") {
+    // System-injected messages (not actual human input):
+    // 1. Compact summaries (isCompactSummary: true)
+    // 2. Meta/context injections (isMeta: true)
+    // 3. Tool results (isToolResult: true - message.content is array with tool_result)
+    // 4. Command notifications (preview starts with <command-message>)
+    if (event.isCompactSummary || event.isMeta || event.isToolResult) {
+      return "context";
+    }
+    // Check for command notifications (starts with <command-message>)
+    if (event.preview?.startsWith("<command-message>")) {
+      return "context";
+    }
+    // Actual human input has userType: "external" and none of the above
+    if (event.userType === "external") {
+      return "me";
+    }
+    // Other system-injected user messages
+    return "context";
+  }
+  return event.eventType;
+}
+
 // Get badge color for event type
 export function getEventBadgeClass(event: SessionEvent): string {
   if (event.subtype === "compact_boundary") {
     return "bg-amber-500/20 text-amber-600 dark:text-amber-400";
   }
-  switch (event.eventType) {
-    case "user":
+  if (event.eventType === "user") {
+    // Use the same logic as getEventDisplayLabel to determine me vs context
+    const label = getEventDisplayLabel(event);
+    if (label === "me") {
+      // Actual human input - bright blue
       return "bg-blue-500/20 text-blue-600 dark:text-blue-400";
+    }
+    // System-injected context - muted gray/slate
+    return "bg-slate-500/20 text-slate-600 dark:text-slate-400";
+  }
+  switch (event.eventType) {
     case "assistant":
       return "bg-purple-500/20 text-purple-600 dark:text-purple-400";
     case "system":

@@ -1,10 +1,11 @@
 mod claude_code;
 mod git;
 mod process;
+mod search;
 mod terminal;
 mod watcher;
 
-use claude_code::{FileDiff, FileEdit, Project, Session};
+use claude_code::{FileDiff, FileEdit, PolicyEvaluation, Project, Session};
 use git::GitFileDiff;
 use std::path::Path;
 use tauri::{AppHandle, State};
@@ -117,6 +118,30 @@ fn get_subagent_raw_json(
     claude_code::get_subagent_raw_json(&project_path, &agent_id, byte_offset)
 }
 
+/// Search session events for matching text.
+/// Supports boolean expressions: `error`, `error bash` (implicit AND),
+/// `error AND bash`, `error OR warning`.
+#[tauri::command]
+fn search_session_events(
+    project_path: String,
+    session_id: String,
+    query: String,
+    max_results: Option<u32>,
+) -> search::SearchResponse {
+    search::search_session(&project_path, &session_id, &query, max_results)
+}
+
+/// Search sub-agent events for matching text.
+#[tauri::command]
+fn search_subagent_events(
+    project_path: String,
+    agent_id: String,
+    query: String,
+    max_results: Option<u32>,
+) -> search::SearchResponse {
+    search::search_subagent(&project_path, &agent_id, &query, max_results)
+}
+
 /// Start watching a session file for changes.
 #[tauri::command]
 fn watch_session(
@@ -157,6 +182,34 @@ fn unwatch_subagent(
     agent_id: String,
 ) -> Result<(), String> {
     watcher::unwatch_subagent(&state, &project_path, &agent_id)
+}
+
+/// Start watching a project's telemetry directory for changes.
+#[tauri::command]
+fn watch_telemetry(
+    app_handle: AppHandle,
+    state: State<'_, WatcherState>,
+    project_path: String,
+) -> Result<(), String> {
+    watcher::watch_telemetry(app_handle, &state, project_path)
+}
+
+/// Stop watching a project's telemetry directory.
+#[tauri::command]
+fn unwatch_telemetry(state: State<'_, WatcherState>, project_path: String) -> Result<(), String> {
+    watcher::unwatch_telemetry(&state, &project_path)
+}
+
+/// Get list of policy evaluations for a project.
+#[tauri::command]
+fn get_policy_evaluations(project_path: String) -> Vec<PolicyEvaluation> {
+    claude_code::get_policy_evaluations(&project_path)
+}
+
+/// Get raw JSON for a specific policy evaluation.
+#[tauri::command]
+fn get_policy_evaluation(project_path: String, filename: String) -> Option<String> {
+    claude_code::get_policy_evaluation(&project_path, &filename)
 }
 
 /// Reveal a path in the system file manager.
@@ -226,10 +279,16 @@ pub fn run() {
             get_event_raw_json,
             get_subagent_events,
             get_subagent_raw_json,
+            search_session_events,
+            search_subagent_events,
             watch_session,
             unwatch_session,
             watch_subagent,
             unwatch_subagent,
+            watch_telemetry,
+            unwatch_telemetry,
+            get_policy_evaluations,
+            get_policy_evaluation,
             reveal_in_file_manager
         ])
         .run(tauri::generate_context!())
